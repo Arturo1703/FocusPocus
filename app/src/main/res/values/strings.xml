@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Focus Pocus</string>
+    <string name="accessibility_service_description">Detecta vídeos cortos seleccionados y sale de ellos para ayudarte a mantener la concentración.</string>
+</resources>
