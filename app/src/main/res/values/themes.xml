@@ -2,4 +2,14 @@
 <resources>
 
     <style name="Theme.FocusPocus" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.FocusPocus.TimePicker" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">#FF1A151F</item>
+        <item name="android:colorAccent">#FF7800D4</item>
+        <item name="android:textColorPrimary">#FFFFFFFF</item>
+        <item name="android:textColorSecondary">#FFD9B8FF</item>
+        <item name="android:navigationBarColor">#FF141116</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
 </resources>

@@ -9,18 +9,25 @@ import com.arturolopez.focuspocus.blocking.detector.InstagramReelsDetector
 import com.arturolopez.focuspocus.blocking.detector.TikTokDetector
 import com.arturolopez.focuspocus.blocking.detector.XVideoFeedDetector
 import com.arturolopez.focuspocus.blocking.detector.YouTubeShortsDetector
+import com.arturolopez.focuspocus.blocking.InstalledAppsCatalog
 import com.arturolopez.focuspocus.data.preferences.BlockingPreferences
+import com.arturolopez.focuspocus.data.preferences.BlockingSchedule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.LocalDateTime
 
 class FocusPocusAccessibilityService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var selectedShortVideoApps: Set<String> = emptySet()
+    private var selectedBlockedApps: Set<String> = emptySet()
+    private var shortVideoSchedule = BlockingSchedule()
+    private var appBlockingSchedule = BlockingSchedule()
     private var lastBlockingActionEpochMillis = 0L
     private var instagramEntryArmed = true
     private var xVideoFeedActionLatched = false
@@ -29,20 +36,43 @@ class FocusPocusAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        updateServiceEventFilter(emptySet())
+        updateServiceEventFilter()
 
         serviceScope.launch {
             BlockingPreferences(applicationContext).selectedShortVideoApps.collectLatest { selectedApps ->
                 selectedShortVideoApps = selectedApps
                 resetDetectorState()
-                updateServiceEventFilter(selectedApps)
+                updateServiceEventFilter()
+            }
+        }
+        serviceScope.launch {
+            BlockingPreferences(applicationContext).shortVideoSchedule.collectLatest { schedule ->
+                shortVideoSchedule = schedule
+                resetDetectorState()
+            }
+        }
+        serviceScope.launch {
+            BlockingPreferences(applicationContext).selectedBlockedApps.collectLatest { blockedApps ->
+                selectedBlockedApps = withContext(Dispatchers.IO) {
+                    val safePackages = InstalledAppsCatalog
+                        .loadBlockableApps(applicationContext)
+                        .mapTo(mutableSetOf()) { app -> app.packageName }
+                    blockedApps.intersect(safePackages)
+                }
+                updateServiceEventFilter()
+            }
+        }
+        serviceScope.launch {
+            BlockingPreferences(applicationContext).appBlockingSchedule.collectLatest { schedule ->
+                appBlockingSchedule = schedule
             }
         }
     }
 
-    private fun updateServiceEventFilter(selectedApps: Set<String>) {
-        val monitoredPackages = selectedApps
+    private fun updateServiceEventFilter() {
+        val monitoredPackages = selectedShortVideoApps
             .flatMapTo(mutableSetOf()) { appId -> MONITORED_PACKAGES_BY_APP_ID[appId].orEmpty() }
+            .apply { addAll(selectedBlockedApps) }
 
         serviceInfo = serviceInfo.apply {
             eventTypes = if (monitoredPackages.isEmpty()) 0 else MONITORED_EVENT_TYPES
@@ -60,6 +90,13 @@ class FocusPocusAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val packageName = event?.packageName?.toString() ?: return
+        val currentDateTime = LocalDateTime.now()
+
+        if (packageName in selectedBlockedApps && appBlockingSchedule.isActiveAt(currentDateTime)) {
+            exitBlockedApp(packageName)
+            return
+        }
+        if (!shortVideoSchedule.isActiveAt(currentDateTime)) return
 
         if (packageName != INSTAGRAM_PACKAGE) {
             instagramEntryArmed = true
@@ -140,6 +177,15 @@ class FocusPocusAccessibilityService : AccessibilityService() {
 
         lastBlockingActionEpochMillis = now
         Log.i(TAG, "TikTok detectado: saliendo a Inicio")
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    private fun exitBlockedApp(packageName: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastBlockingActionEpochMillis < ACTION_COOLDOWN_MILLIS) return
+
+        lastBlockingActionEpochMillis = now
+        Log.i(TAG, "Aplicación bloqueada: $packageName")
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
