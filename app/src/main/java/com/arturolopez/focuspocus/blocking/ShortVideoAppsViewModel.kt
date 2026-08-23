@@ -99,7 +99,11 @@ class ShortVideoAppsViewModel(application: Application) : AndroidViewModel(appli
                 "TikTok",
                 listOf("com.zhiliaoapp.musically", "com.ss.android.ugc.trill"),
             ),
-            SupportedApp("facebook", "Facebook", listOf("com.facebook.katana")),
+            SupportedApp(
+                "facebook",
+                "Facebook",
+                listOf("com.facebook.katana"),
+            ),
             SupportedApp("x", "X", listOf("com.twitter.android")),
         )
     }
