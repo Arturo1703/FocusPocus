@@ -79,6 +79,60 @@ class BlockingPreferences(context: Context) {
         }
     }
 
+    val restrictionsPausedUntilEpochMillis: Flow<Long> = callbackFlow {
+        fun emitCurrentPause() {
+            trySend(preferences.getLong(RESTRICTIONS_PAUSED_UNTIL_EPOCH_MILLIS, 0L))
+        }
+
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == RESTRICTIONS_PAUSED_UNTIL_EPOCH_MILLIS) emitCurrentPause()
+        }
+
+        emitCurrentPause()
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        awaitClose {
+            preferences.unregisterOnSharedPreferenceChangeListener(listener)
+        }
+    }
+
+    fun applyShortVideoConfiguration(
+        selectedAppIds: Set<String>,
+        schedule: BlockingSchedule,
+    ) {
+        preferences.edit()
+            .putStringSet(SELECTED_SHORT_VIDEO_APPS, selectedAppIds.toSet())
+            .putInt(SHORT_VIDEO_START_MINUTES, schedule.startMinutes.coerceIn(0, 1439))
+            .putInt(SHORT_VIDEO_END_MINUTES, schedule.endMinutes.coerceIn(0, 1439))
+            .putStringSet(
+                SHORT_VIDEO_ACTIVE_DAYS,
+                schedule.activeDays.filter { it in 1..7 }.map(Int::toString).toSet(),
+            )
+            .apply()
+    }
+
+    fun applyAppBlockingConfiguration(
+        selectedPackages: Set<String>,
+        schedule: BlockingSchedule,
+    ) {
+        preferences.edit()
+            .putStringSet(SELECTED_BLOCKED_APPS, selectedPackages.toSet())
+            .putInt(APP_BLOCKING_START_MINUTES, schedule.startMinutes.coerceIn(0, 1439))
+            .putInt(APP_BLOCKING_END_MINUTES, schedule.endMinutes.coerceIn(0, 1439))
+            .putStringSet(
+                APP_BLOCKING_ACTIVE_DAYS,
+                schedule.activeDays.filter { it in 1..7 }.map(Int::toString).toSet(),
+            )
+            .apply()
+    }
+
+    fun pauseRestrictions(durationMinutes: Int) {
+        val pausedUntil = System.currentTimeMillis() +
+            durationMinutes.coerceIn(MIN_PAUSE_MINUTES, MAX_PAUSE_MINUTES) * 60_000L
+        preferences.edit()
+            .putLong(RESTRICTIONS_PAUSED_UNTIL_EPOCH_MILLIS, pausedUntil)
+            .apply()
+    }
+
     suspend fun toggleShortVideoApp(appId: String) {
         val selectedApps = preferences
             .getStringSet(SELECTED_SHORT_VIDEO_APPS, emptySet())
@@ -218,6 +272,10 @@ class BlockingPreferences(context: Context) {
         const val APP_BLOCKING_START_MINUTES = "app_blocking_start_minutes"
         const val APP_BLOCKING_END_MINUTES = "app_blocking_end_minutes"
         const val APP_BLOCKING_ACTIVE_DAYS = "app_blocking_active_days"
+        const val RESTRICTIONS_PAUSED_UNTIL_EPOCH_MILLIS =
+            "restrictions_paused_until_epoch_millis"
+        const val MIN_PAUSE_MINUTES = 1
+        const val MAX_PAUSE_MINUTES = 15
         val SCHEDULE_KEYS = setOf(
             SHORT_VIDEO_START_MINUTES,
             SHORT_VIDEO_END_MINUTES,

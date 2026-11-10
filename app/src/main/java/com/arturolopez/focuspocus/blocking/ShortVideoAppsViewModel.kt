@@ -17,11 +17,14 @@ import kotlinx.coroutines.withContext
 class ShortVideoAppsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferences = BlockingPreferences(application)
-    private var selectedIds: Set<String> = emptySet()
+    private var appliedSelectedIds: Set<String> = emptySet()
+    private var appliedSchedule = BlockingSchedule()
     private val _apps = MutableStateFlow<List<ShortVideoApp>>(emptyList())
     val apps: StateFlow<List<ShortVideoApp>> = _apps.asStateFlow()
     private val _schedule = MutableStateFlow(BlockingSchedule())
     val schedule: StateFlow<BlockingSchedule> = _schedule.asStateFlow()
+    private val _hasChanges = MutableStateFlow(false)
+    val hasChanges: StateFlow<Boolean> = _hasChanges.asStateFlow()
 
     init {
         observeSelection()
@@ -33,24 +36,66 @@ class ShortVideoAppsViewModel(application: Application) : AndroidViewModel(appli
         val app = _apps.value.firstOrNull { it.id == appId }
         if (app?.isInstalled != true) return
 
-        viewModelScope.launch {
-            preferences.toggleShortVideoApp(appId)
+        _apps.update { currentApps ->
+            currentApps.map { currentApp ->
+                if (currentApp.id == appId) {
+                    currentApp.copy(isSelected = !currentApp.isSelected)
+                } else {
+                    currentApp
+                }
+            }
         }
+        updateHasChanges()
     }
 
-    fun setStartMinutes(minutes: Int) = preferences.setShortVideoStartMinutes(minutes)
+    fun setStartMinutes(minutes: Int) {
+        _schedule.update { it.copy(startMinutes = minutes.coerceIn(0, 1439)) }
+        updateHasChanges()
+    }
 
-    fun setEndMinutes(minutes: Int) = preferences.setShortVideoEndMinutes(minutes)
+    fun setEndMinutes(minutes: Int) {
+        _schedule.update { it.copy(endMinutes = minutes.coerceIn(0, 1439)) }
+        updateHasChanges()
+    }
 
-    fun toggleActiveDay(day: Int) = preferences.toggleShortVideoActiveDay(day)
+    fun toggleActiveDay(day: Int) {
+        if (day !in 1..7) return
+        _schedule.update { current ->
+            current.copy(
+                activeDays = current.activeDays.toMutableSet().apply {
+                    if (!add(day)) remove(day)
+                },
+            )
+        }
+        updateHasChanges()
+    }
+
+    fun applyDraft() {
+        val selectedIds = selectedDraftIds()
+        val currentSchedule = _schedule.value
+        appliedSelectedIds = selectedIds
+        appliedSchedule = currentSchedule
+        _hasChanges.value = false
+        preferences.applyShortVideoConfiguration(selectedIds, currentSchedule)
+    }
+
+    fun discardDraft() {
+        _schedule.value = appliedSchedule
+        _apps.update { currentApps ->
+            currentApps.map { app -> app.copy(isSelected = app.id in appliedSelectedIds) }
+        }
+        _hasChanges.value = false
+    }
 
     private fun observeSelection() {
         viewModelScope.launch {
             preferences.selectedShortVideoApps.collect { selectedApps ->
-                selectedIds = selectedApps
-                _apps.update { currentApps ->
-                    currentApps.map { app ->
-                        app.copy(isSelected = app.id in selectedApps)
+                appliedSelectedIds = selectedApps
+                if (!_hasChanges.value) {
+                    _apps.update { currentApps ->
+                        currentApps.map { app ->
+                            app.copy(isSelected = app.id in selectedApps)
+                        }
                     }
                 }
             }
@@ -60,7 +105,10 @@ class ShortVideoAppsViewModel(application: Application) : AndroidViewModel(appli
     private fun observeSchedule() {
         viewModelScope.launch {
             preferences.shortVideoSchedule.collect { currentSchedule ->
-                _schedule.value = currentSchedule
+                appliedSchedule = currentSchedule
+                if (!_hasChanges.value) {
+                    _schedule.value = currentSchedule
+                }
             }
         }
     }
@@ -85,11 +133,21 @@ class ShortVideoAppsViewModel(application: Application) : AndroidViewModel(appli
                         packageName = installedPackage,
                         icon = icon,
                         isInstalled = true,
-                        isSelected = supportedApp.id in selectedIds,
+                        isSelected = supportedApp.id in appliedSelectedIds,
                     )
                 }
             }
         }
+    }
+
+    private fun selectedDraftIds(): Set<String> = _apps.value
+        .asSequence()
+        .filter(ShortVideoApp::isSelected)
+        .mapTo(mutableSetOf(), ShortVideoApp::id)
+
+    private fun updateHasChanges() {
+        _hasChanges.value = selectedDraftIds() != appliedSelectedIds ||
+            _schedule.value != appliedSchedule
     }
 
 }

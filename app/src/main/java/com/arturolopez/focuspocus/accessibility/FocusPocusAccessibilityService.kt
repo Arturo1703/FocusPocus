@@ -14,8 +14,10 @@ import com.arturolopez.focuspocus.data.preferences.BlockingPreferences
 import com.arturolopez.focuspocus.data.preferences.BlockingSchedule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,6 +30,8 @@ class FocusPocusAccessibilityService : AccessibilityService() {
     private var selectedBlockedApps: Set<String> = emptySet()
     private var shortVideoSchedule = BlockingSchedule()
     private var appBlockingSchedule = BlockingSchedule()
+    private var restrictionsPausedUntilEpochMillis = 0L
+    private var pauseExpirationJob: Job? = null
     private var lastBlockingActionEpochMillis = 0L
     private var instagramEntryArmed = true
     private var xVideoFeedActionLatched = false
@@ -67,6 +71,11 @@ class FocusPocusAccessibilityService : AccessibilityService() {
                 appBlockingSchedule = schedule
             }
         }
+        serviceScope.launch {
+            BlockingPreferences(applicationContext)
+                .restrictionsPausedUntilEpochMillis
+                .collectLatest(::updateRestrictionPause)
+        }
     }
 
     private fun updateServiceEventFilter() {
@@ -75,11 +84,32 @@ class FocusPocusAccessibilityService : AccessibilityService() {
             .apply { addAll(selectedBlockedApps) }
 
         serviceInfo = serviceInfo.apply {
-            eventTypes = if (monitoredPackages.isEmpty()) 0 else MONITORED_EVENT_TYPES
-            packageNames = monitoredPackages.toTypedArray()
+            val shouldMonitor = monitoredPackages.isNotEmpty() && !restrictionsArePaused()
+            eventTypes = if (shouldMonitor) MONITORED_EVENT_TYPES else 0
+            packageNames = if (shouldMonitor) monitoredPackages.toTypedArray() else emptyArray()
             notificationTimeout = EVENT_NOTIFICATION_TIMEOUT_MILLIS
         }
     }
+
+    private fun updateRestrictionPause(pausedUntilEpochMillis: Long) {
+        restrictionsPausedUntilEpochMillis = pausedUntilEpochMillis
+        pauseExpirationJob?.cancel()
+        resetDetectorState()
+        updateServiceEventFilter()
+
+        val remainingMillis = pausedUntilEpochMillis - System.currentTimeMillis()
+        if (remainingMillis <= 0L) return
+
+        pauseExpirationJob = serviceScope.launch {
+            delay(remainingMillis)
+            restrictionsPausedUntilEpochMillis = 0L
+            resetDetectorState()
+            updateServiceEventFilter()
+        }
+    }
+
+    private fun restrictionsArePaused(): Boolean =
+        System.currentTimeMillis() < restrictionsPausedUntilEpochMillis
 
     private fun resetDetectorState() {
         instagramEntryArmed = true
@@ -89,6 +119,8 @@ class FocusPocusAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (restrictionsArePaused()) return
+
         val packageName = event?.packageName?.toString() ?: return
         val currentDateTime = LocalDateTime.now()
 

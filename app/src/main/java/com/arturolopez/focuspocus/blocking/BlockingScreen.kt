@@ -1,7 +1,9 @@
 package com.arturolopez.focuspocus.blocking
 
+import android.app.Activity
 import android.app.TimePickerDialog
 import android.content.Context
+import android.content.ContextWrapper
 import android.view.WindowManager
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -35,8 +37,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -48,24 +57,99 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.arturolopez.focuspocus.R
 import com.arturolopez.focuspocus.data.preferences.BlockingSchedule
 import com.arturolopez.focuspocus.ui.theme.MysticPurple
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 @Composable
 fun BlockingScreen(
     viewModel: ShortVideoAppsViewModel = viewModel(),
     appBlockingViewModel: AppBlockingViewModel = viewModel(),
+    actionsViewModel: BlockingActionsViewModel = viewModel(),
 ) {
     val apps by viewModel.apps.collectAsState()
     val schedule by viewModel.schedule.collectAsState()
+    val shortBlockingHasChanges by viewModel.hasChanges.collectAsState()
     val blockableApps by appBlockingViewModel.apps.collectAsState()
     val appBlockingSchedule by appBlockingViewModel.schedule.collectAsState()
     val selectedCategory by appBlockingViewModel.selectedCategory.collectAsState()
+    val appBlockingHasChanges by appBlockingViewModel.hasChanges.collectAsState()
+    val pauseUntilEpochMillis by actionsViewModel.pauseUntilEpochMillis.collectAsState()
+    val hasDraftChanges = shortBlockingHasChanges || appBlockingHasChanges
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    if (apps.isEmpty()) {
+    var pendingAction by remember { mutableStateOf<BlockingPendingAction?>(null) }
+    var secondsRemaining by remember { mutableIntStateOf(0) }
+    var showPauseDialog by remember { mutableStateOf(false) }
+    var pauseDurationMinutes by remember { mutableIntStateOf(5) }
+    var currentEpochMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var screenResumed by remember {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> screenResumed = true
+                Lifecycle.Event.ON_PAUSE -> screenResumed = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (context.findActivity()?.isChangingConfigurations != true) {
+                viewModel.discardDraft()
+                appBlockingViewModel.discardDraft()
+            }
+        }
+    }
+
+    LaunchedEffect(pendingAction, screenResumed) {
+        val action = pendingAction ?: return@LaunchedEffect
+        if (!screenResumed) return@LaunchedEffect
+
+        while (secondsRemaining > 0) {
+            delay(1_000L)
+            secondsRemaining -= 1
+        }
+
+        when (action) {
+            BlockingPendingAction.Apply -> {
+                viewModel.applyDraft()
+                appBlockingViewModel.applyDraft()
+            }
+            is BlockingPendingAction.Pause -> {
+                actionsViewModel.pauseRestrictions(action.durationMinutes)
+            }
+        }
+        pendingAction = null
+    }
+
+    LaunchedEffect(pauseUntilEpochMillis, screenResumed) {
+        currentEpochMillis = System.currentTimeMillis()
+        if (!screenResumed) return@LaunchedEffect
+        while (currentEpochMillis < pauseUntilEpochMillis) {
+            delay(1_000L)
+            currentEpochMillis = System.currentTimeMillis()
+        }
+    }
+
+    val pauseRemainingMillis =
+        (pauseUntilEpochMillis - currentEpochMillis).coerceAtLeast(0L)
+    val editingEnabled = pendingAction == null
+
+    if (apps.isEmpty() && blockableApps.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
@@ -75,33 +159,83 @@ fun BlockingScreen(
         return
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 20.dp),
-    ) {
-        item(key = "short-blocking") {
-            ShortBlockingSection(
-                apps = apps,
-                schedule = schedule,
-                onToggle = viewModel::toggleSelection,
-                onStartTimeSelected = viewModel::setStartMinutes,
-                onEndTimeSelected = viewModel::setEndMinutes,
-                onDayToggle = viewModel::toggleActiveDay,
-            )
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 24.dp,
+                top = 76.dp,
+                end = 24.dp,
+                bottom = 20.dp,
+            ),
+        ) {
+            item(key = "blocking-quick-actions") {
+                BlockingQuickActions(
+                    pendingAction = pendingAction,
+                    pauseRemainingMillis = pauseRemainingMillis,
+                    onPauseClick = { showPauseDialog = true },
+                )
+            }
+            pendingAction?.let { action ->
+                item(key = "blocking-wait-indicator") {
+                    BlockingWaitIndicator(
+                        pendingAction = action,
+                        secondsRemaining = secondsRemaining,
+                        modifier = Modifier.padding(top = 14.dp),
+                    )
+                }
+            }
+            item(key = "short-blocking") {
+                ShortBlockingSection(
+                    apps = apps,
+                    schedule = schedule,
+                    enabled = editingEnabled,
+                    onToggle = viewModel::toggleSelection,
+                    onStartTimeSelected = viewModel::setStartMinutes,
+                    onEndTimeSelected = viewModel::setEndMinutes,
+                    onDayToggle = viewModel::toggleActiveDay,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+            }
+            item(key = "app-blocking") {
+                AppBlockingSection(
+                    apps = blockableApps,
+                    schedule = appBlockingSchedule,
+                    selectedCategory = selectedCategory,
+                    enabled = editingEnabled,
+                    onCategorySelected = appBlockingViewModel::selectCategory,
+                    onToggle = appBlockingViewModel::toggleSelection,
+                    onStartTimeSelected = appBlockingViewModel::setStartMinutes,
+                    onEndTimeSelected = appBlockingViewModel::setEndMinutes,
+                    onDayToggle = appBlockingViewModel::toggleActiveDay,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+            }
         }
-        item(key = "app-blocking") {
-            AppBlockingSection(
-                apps = blockableApps,
-                schedule = appBlockingSchedule,
-                selectedCategory = selectedCategory,
-                onCategorySelected = appBlockingViewModel::selectCategory,
-                onToggle = appBlockingViewModel::toggleSelection,
-                onStartTimeSelected = appBlockingViewModel::setStartMinutes,
-                onEndTimeSelected = appBlockingViewModel::setEndMinutes,
-                onDayToggle = appBlockingViewModel::toggleActiveDay,
-                modifier = Modifier.padding(top = 16.dp),
-            )
-        }
+
+        BlockingApplyButton(
+            enabled = hasDraftChanges && pendingAction == null,
+            onClick = {
+                secondsRemaining = ACTION_WAIT_SECONDS
+                pendingAction = BlockingPendingAction.Apply
+            },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 16.dp, end = 24.dp),
+        )
+    }
+
+    if (showPauseDialog) {
+        PauseDurationDialog(
+            durationMinutes = pauseDurationMinutes,
+            onDurationChange = { pauseDurationMinutes = it },
+            onConfirm = {
+                showPauseDialog = false
+                secondsRemaining = ACTION_WAIT_SECONDS
+                pendingAction = BlockingPendingAction.Pause(pauseDurationMinutes)
+            },
+            onDismiss = { showPauseDialog = false },
+        )
     }
 }
 
@@ -111,6 +245,7 @@ private fun AppBlockingSection(
     apps: List<BlockableApp>,
     schedule: BlockingSchedule,
     selectedCategory: AppBlockCategory,
+    enabled: Boolean,
     onCategorySelected: (AppBlockCategory) -> Unit,
     onToggle: (String) -> Unit,
     onStartTimeSelected: (Int) -> Unit,
@@ -144,6 +279,7 @@ private fun AppBlockingSection(
 
             BlockingScheduleBar(
                 schedule = schedule,
+                enabled = enabled,
                 onStartTimeSelected = onStartTimeSelected,
                 onEndTimeSelected = onEndTimeSelected,
                 onDayToggle = onDayToggle,
@@ -159,6 +295,7 @@ private fun AppBlockingSection(
                     val isSelected = category == selectedCategory
                     Surface(
                         onClick = { onCategorySelected(category) },
+                        enabled = enabled,
                         shape = RoundedCornerShape(12.dp),
                         color = if (isSelected) {
                             MysticPurple.copy(alpha = 0.82f)
@@ -200,6 +337,7 @@ private fun AppBlockingSection(
                         visibleApps.forEach { app ->
                             BlockableAppCard(
                                 app = app,
+                                enabled = enabled,
                                 onClick = { onToggle(app.packageName) },
                                 modifier = Modifier.width(appCardWidth),
                             )
@@ -214,6 +352,7 @@ private fun AppBlockingSection(
 @Composable
 private fun BlockableAppCard(
     app: BlockableApp,
+    enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -223,7 +362,8 @@ private fun BlockableAppCard(
 
     Card(
         onClick = onClick,
-        modifier = modifier.aspectRatio(0.72f),
+        enabled = enabled,
+        modifier = modifier.aspectRatio(0.88f),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
         ),
@@ -253,18 +393,11 @@ private fun BlockableAppCard(
                 }
                 Text(
                     text = app.name,
-                    modifier = Modifier.padding(top = 8.dp),
+                    modifier = Modifier.padding(top = 6.dp),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
                     maxLines = 1,
-                )
-                Text(
-                    text = if (app.isSelected) "Bloqueada" else "Disponible",
-                    modifier = Modifier.padding(top = 2.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
                 )
             }
 
@@ -287,13 +420,15 @@ private fun BlockableAppCard(
 private fun ShortBlockingSection(
     apps: List<ShortVideoApp>,
     schedule: BlockingSchedule,
+    enabled: Boolean,
     onToggle: (String) -> Unit,
     onStartTimeSelected: (Int) -> Unit,
     onEndTimeSelected: (Int) -> Unit,
     onDayToggle: (Int) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f),
@@ -316,6 +451,7 @@ private fun ShortBlockingSection(
 
             BlockingScheduleBar(
                 schedule = schedule,
+                enabled = enabled,
                 onStartTimeSelected = onStartTimeSelected,
                 onEndTimeSelected = onEndTimeSelected,
                 onDayToggle = onDayToggle,
@@ -333,6 +469,7 @@ private fun ShortBlockingSection(
                     apps.forEach { app ->
                         ShortVideoAppCard(
                             app = app,
+                            enabled = enabled,
                             onClick = { onToggle(app.id) },
                             modifier = Modifier.width(appCardWidth),
                         )
@@ -346,6 +483,7 @@ private fun ShortBlockingSection(
 @Composable
 private fun BlockingScheduleBar(
     schedule: BlockingSchedule,
+    enabled: Boolean,
     onStartTimeSelected: (Int) -> Unit,
     onEndTimeSelected: (Int) -> Unit,
     onDayToggle: (Int) -> Unit,
@@ -379,6 +517,7 @@ private fun BlockingScheduleBar(
                     val isSelected = day in schedule.activeDays
                     Surface(
                         onClick = { onDayToggle(day) },
+                        enabled = enabled,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp),
                         color = if (isSelected) {
@@ -419,6 +558,7 @@ private fun BlockingScheduleBar(
                 TimeSelector(
                     label = "Desde",
                     minutes = schedule.startMinutes,
+                    enabled = enabled,
                     modifier = Modifier.weight(1f),
                     onClick = {
                         showTimePicker(context, schedule.startMinutes, onStartTimeSelected)
@@ -428,6 +568,7 @@ private fun BlockingScheduleBar(
                 TimeSelector(
                     label = "Hasta",
                     minutes = schedule.endMinutes,
+                    enabled = enabled,
                     modifier = Modifier.weight(1f),
                     onClick = {
                         showTimePicker(context, schedule.endMinutes, onEndTimeSelected)
@@ -442,11 +583,13 @@ private fun BlockingScheduleBar(
 private fun TimeSelector(
     label: String,
     minutes: Int,
+    enabled: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     Card(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.42f),
@@ -509,9 +652,18 @@ private val DAY_LABELS = listOf(
     7 to "D",
 )
 
+private const val ACTION_WAIT_SECONDS = 45
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 @Composable
 private fun ShortVideoAppCard(
     app: ShortVideoApp,
+    enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -522,8 +674,8 @@ private fun ShortVideoAppCard(
 
     Card(
         onClick = onClick,
-        enabled = app.isInstalled,
-        modifier = modifier.aspectRatio(0.72f),
+        enabled = app.isInstalled && enabled,
+        modifier = modifier.aspectRatio(0.88f),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
             disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
@@ -573,23 +725,11 @@ private fun ShortVideoAppCard(
 
                 Text(
                     text = app.name,
-                    modifier = Modifier.padding(top = 8.dp),
+                    modifier = Modifier.padding(top = 6.dp),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
                     maxLines = 1,
-                )
-
-                Text(
-                    text = when {
-                        !app.isInstalled -> "No instalada"
-                        app.isSelected -> "Seleccionada"
-                        else -> "Disponible"
-                    },
-                    modifier = Modifier.padding(top = 2.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
                 )
             }
 
