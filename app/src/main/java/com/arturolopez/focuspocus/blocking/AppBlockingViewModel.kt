@@ -78,7 +78,15 @@ class AppBlockingViewModel(application: Application) : AndroidViewModel(applicat
         updateHasChanges()
     }
 
+    internal fun requiresWaitToApply(): Boolean = _hasChanges.value && requiresBlockingWait(
+        appliedApps = appliedSelectedPackages,
+        appliedSchedule = appliedSchedule,
+        draftApps = selectedDraftPackages(),
+        draftSchedule = _schedule.value,
+    )
+
     fun applyDraft() {
+        if (!_hasChanges.value) return
         val selectedPackages = selectedDraftPackages()
         val currentSchedule = _schedule.value
         appliedSelectedPackages = selectedPackages

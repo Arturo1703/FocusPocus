@@ -33,6 +33,7 @@ class FocusPocusAccessibilityService : AccessibilityService() {
     private var restrictionsPausedUntilEpochMillis = 0L
     private var pauseExpirationJob: Job? = null
     private var lastBlockingActionEpochMillis = 0L
+    private var youtubeShortsActionLatched = false
     private var instagramEntryArmed = true
     private var xVideoFeedActionLatched = false
     private var facebookReelActionLatched = false
@@ -112,6 +113,7 @@ class FocusPocusAccessibilityService : AccessibilityService() {
         System.currentTimeMillis() < restrictionsPausedUntilEpochMillis
 
     private fun resetDetectorState() {
+        youtubeShortsActionLatched = false
         instagramEntryArmed = true
         xVideoFeedActionLatched = false
         facebookReelActionLatched = false
@@ -128,8 +130,20 @@ class FocusPocusAccessibilityService : AccessibilityService() {
             exitBlockedApp(packageName)
             return
         }
-        if (!shortVideoSchedule.isActiveAt(currentDateTime)) return
+        if (!shortVideoSchedule.isActiveAt(currentDateTime)) {
+            youtubeShortsActionLatched = false
+            return
+        }
 
+        if (youtubeShortsActionLatched &&
+            packageName != YOUTUBE_PACKAGE &&
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+        ) {
+            val activePackage = rootInActiveWindow?.packageName?.toString()
+            if (activePackage != null && activePackage != YOUTUBE_PACKAGE) {
+                youtubeShortsActionLatched = false
+            }
+        }
         if (packageName != INSTAGRAM_PACKAGE) {
             instagramEntryArmed = true
         }
@@ -174,12 +188,31 @@ class FocusPocusAccessibilityService : AccessibilityService() {
         if (packageName != YOUTUBE_PACKAGE) return
         if (YOUTUBE_APP_ID !in selectedShortVideoApps) return
 
-        val detection = YouTubeShortsDetector.detect(rootInActiveWindow) ?: return
+        blockYouTubeShort()
+    }
+
+    private fun blockYouTubeShort() {
+        val root = rootInActiveWindow ?: return
+        val activePackage = root.packageName?.toString() ?: return
+        if (activePackage != YOUTUBE_PACKAGE) {
+            youtubeShortsActionLatched = false
+            return
+        }
+
+        val inspection = YouTubeShortsDetector.inspect(root) ?: return
+        // A single player view can linger during the transition back to the feed.
+        if (inspection.visiblePlayerIds.isEmpty()) {
+            youtubeShortsActionLatched = false
+            return
+        }
+        if (!inspection.isPlayerOpen || youtubeShortsActionLatched) return
+
         val now = SystemClock.elapsedRealtime()
         if (now - lastBlockingActionEpochMillis < ACTION_COOLDOWN_MILLIS) return
 
+        youtubeShortsActionLatched = true
         lastBlockingActionEpochMillis = now
-        Log.i(TAG, "YouTube Short detectado: ${detection.reason}")
+        Log.i(TAG, "YouTube Short detectado: player-view-ids:${inspection.visiblePlayerIds.joinToString()}")
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 

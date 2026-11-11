@@ -7,11 +7,22 @@ data class BlockingSchedule(
     val endMinutes: Int = MINUTES_PER_DAY - 1,
     val activeDays: Set<Int> = ALL_DAYS,
 ) {
-    fun isActiveAt(dateTime: LocalDateTime): Boolean {
-        if (activeDays.isEmpty()) return false
+    fun isActiveAt(dateTime: LocalDateTime): Boolean =
+        isActiveAt(dateTime.dayOfWeek.value, dateTime.hour * 60 + dateTime.minute)
 
-        val currentDay = dateTime.dayOfWeek.value
-        val currentMinutes = dateTime.hour * 60 + dateTime.minute
+    internal fun covers(other: BlockingSchedule): Boolean {
+        if (this == other || other.activeDays.isEmpty()) return true
+
+        // Between these boundaries, neither schedule can change its state.
+        val boundaries = setOf(0, startMinutes, endMinutes + 1, other.startMinutes, other.endMinutes + 1)
+            .filter { it in 0 until MINUTES_PER_DAY }
+        return ALL_DAYS.all { day ->
+            boundaries.none { minute -> other.isActiveAt(day, minute) && !isActiveAt(day, minute) }
+        }
+    }
+
+    private fun isActiveAt(currentDay: Int, currentMinutes: Int): Boolean {
+        if (activeDays.isEmpty()) return false
 
         return when {
             startMinutes <= endMinutes ->

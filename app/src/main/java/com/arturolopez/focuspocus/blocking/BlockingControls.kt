@@ -2,14 +2,11 @@ package com.arturolopez.focuspocus.blocking
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BookmarkAdd
@@ -31,16 +28,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.arturolopez.focuspocus.ui.theme.MysticPurple
 import kotlin.math.ceil
 
 internal sealed interface BlockingPendingAction {
-    data object Apply : BlockingPendingAction
+    class Apply : BlockingPendingAction
     data class Pause(val durationMinutes: Int) : BlockingPendingAction
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+internal const val APPLY_WAIT_SECONDS = 40
+internal const val PAUSE_WAIT_SECONDS = 45
+
 @Composable
 internal fun BlockingQuickActions(
     pendingAction: BlockingPendingAction?,
@@ -50,39 +50,35 @@ internal fun BlockingQuickActions(
 ) {
     val waiting = pendingAction != null
 
-    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val buttonWidth = (maxWidth - 16.dp) / 3
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            maxItemsInEachRow = 3,
-        ) {
-            BlockingActionButton(
-                label = "Cargar perfil",
-                icon = Icons.Default.Add,
-                enabled = false,
-                onClick = {},
-                modifier = Modifier.width(buttonWidth),
-            )
-            BlockingActionButton(
-                label = "Guardar perfil",
-                icon = Icons.Default.BookmarkAdd,
-                enabled = false,
-                onClick = {},
-                modifier = Modifier.width(buttonWidth),
-            )
-            BlockingActionButton(
-                label = if (pauseRemainingMillis > 0L) {
-                    "Pausa ${ceil(pauseRemainingMillis / 60_000.0).toInt()} min"
-                } else {
-                    "Pausar"
-                },
-                icon = Icons.Default.PauseCircle,
-                enabled = !waiting && pauseRemainingMillis <= 0L,
-                onClick = onPauseClick,
-                modifier = Modifier.width(buttonWidth),
-            )
-        }
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        BlockingActionButton(
+            label = "Cargar perfil",
+            icon = Icons.Default.Add,
+            enabled = false,
+            onClick = {},
+            modifier = Modifier.weight(1f),
+        )
+        BlockingActionButton(
+            label = "Guardar perfil",
+            icon = Icons.Default.BookmarkAdd,
+            enabled = false,
+            onClick = {},
+            modifier = Modifier.weight(1f),
+        )
+        BlockingActionButton(
+            label = if (pauseRemainingMillis > 0L) {
+                "En pausa\n${ceil(pauseRemainingMillis / 60_000.0).toInt()} min"
+            } else {
+                "Pausar"
+            },
+            icon = Icons.Default.PauseCircle,
+            enabled = !waiting && pauseRemainingMillis <= 0L,
+            onClick = onPauseClick,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -97,7 +93,7 @@ internal fun BlockingApplyButton(
         enabled = enabled,
         modifier = modifier,
         colors = ButtonDefaults.buttonColors(
-            containerColor = MUTED_APPLY_PURPLE,
+            containerColor = ACTIVE_APPLY_YELLOW,
             contentColor = Color.Black,
             disabledContainerColor = MUTED_APPLY_PURPLE.copy(alpha = 0.42f),
             disabledContentColor = Color.Black.copy(alpha = 0.48f),
@@ -109,8 +105,38 @@ internal fun BlockingApplyButton(
 }
 
 @Composable
-internal fun BlockingWaitIndicator(
-    pendingAction: BlockingPendingAction,
+internal fun BlockingApplyCountdownDialog(
+    secondsRemaining: Int,
+    onClose: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Aplicar cambios") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "$secondsRemaining s",
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                LinearProgressIndicator(
+                    progress = { (APPLY_WAIT_SECONDS - secondsRemaining) / APPLY_WAIT_SECONDS.toFloat() },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("Los cambios se aplicarán al terminar la cuenta atrás. Si cierras el diálogo, quedarán pendientes.")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onClose) { Text("Cerrar") }
+        },
+    )
+}
+
+@Composable
+internal fun BlockingPauseWaitIndicator(
     secondsRemaining: Int,
     modifier: Modifier = Modifier,
 ) {
@@ -119,19 +145,14 @@ internal fun BlockingWaitIndicator(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
-            text = when (pendingAction) {
-                BlockingPendingAction.Apply ->
-                    "Respira. Los cambios se aplicarán en $secondsRemaining segundos."
-                is BlockingPendingAction.Pause ->
-                    "Respira. La pausa comenzará en $secondsRemaining segundos."
-            },
+            text = "Respira. La pausa comenzará en $secondsRemaining segundos.",
             color = Color.White.copy(alpha = 0.82f),
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
         LinearProgressIndicator(
-            progress = { (45 - secondsRemaining).coerceIn(0, 45) / 45f },
+            progress = { (PAUSE_WAIT_SECONDS - secondsRemaining) / PAUSE_WAIT_SECONDS.toFloat() },
             modifier = Modifier.fillMaxWidth(),
             color = MysticPurple.copy(alpha = 0.72f),
             trackColor = Color.White.copy(alpha = 0.12f),
@@ -171,7 +192,9 @@ private fun BlockingActionButton(
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
+                minLines = 2,
                 maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -204,14 +227,15 @@ internal fun PauseDurationDialog(
                     steps = 13,
                 )
                 Text(
-                    text = "La espera consciente de 45 segundos comenzará al confirmar.",
+                    text = "Tras $PAUSE_WAIT_SECONDS segundos de espera se pausarán los bloqueos de apps y vídeos cortos. " +
+                        "Se reactivarán automáticamente al terminar la pausa.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) { Text("Comenzar espera") }
+            TextButton(onClick = onConfirm) { Text("Iniciar cuenta atrás") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancelar") }
@@ -219,4 +243,5 @@ internal fun PauseDurationDialog(
     )
 }
 
+private val ACTIVE_APPLY_YELLOW = Color(0xFFFFD54F)
 private val MUTED_APPLY_PURPLE = Color(0xFF9B72B3)

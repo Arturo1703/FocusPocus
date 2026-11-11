@@ -94,6 +94,11 @@ fun BlockingScreen(
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
     }
 
+    fun applyDrafts() {
+        viewModel.applyDraft()
+        appBlockingViewModel.applyDraft()
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -121,14 +126,12 @@ fun BlockingScreen(
 
         while (secondsRemaining > 0) {
             delay(1_000L)
+            if (pendingAction !== action || !screenResumed) return@LaunchedEffect
             secondsRemaining -= 1
         }
 
         when (action) {
-            BlockingPendingAction.Apply -> {
-                viewModel.applyDraft()
-                appBlockingViewModel.applyDraft()
-            }
+            is BlockingPendingAction.Apply -> applyDrafts()
             is BlockingPendingAction.Pause -> {
                 actionsViewModel.pauseRestrictions(action.durationMinutes)
             }
@@ -159,14 +162,14 @@ fun BlockingScreen(
         return
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(
                 start = 24.dp,
-                top = 76.dp,
+                top = 16.dp,
                 end = 24.dp,
-                bottom = 20.dp,
+                bottom = 12.dp,
             ),
         ) {
             item(key = "blocking-quick-actions") {
@@ -175,15 +178,6 @@ fun BlockingScreen(
                     pauseRemainingMillis = pauseRemainingMillis,
                     onPauseClick = { showPauseDialog = true },
                 )
-            }
-            pendingAction?.let { action ->
-                item(key = "blocking-wait-indicator") {
-                    BlockingWaitIndicator(
-                        pendingAction = action,
-                        secondsRemaining = secondsRemaining,
-                        modifier = Modifier.padding(top = 14.dp),
-                    )
-                }
             }
             item(key = "short-blocking") {
                 ShortBlockingSection(
@@ -213,15 +207,40 @@ fun BlockingScreen(
             }
         }
 
-        BlockingApplyButton(
-            enabled = hasDraftChanges && pendingAction == null,
-            onClick = {
-                secondsRemaining = ACTION_WAIT_SECONDS
-                pendingAction = BlockingPendingAction.Apply
-            },
+        Column(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 16.dp, end = 24.dp),
+                .fillMaxWidth()
+                .padding(start = 24.dp, top = 8.dp, end = 24.dp, bottom = 12.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (pendingAction is BlockingPendingAction.Pause) {
+                BlockingPauseWaitIndicator(secondsRemaining = secondsRemaining)
+            }
+            BlockingApplyButton(
+                enabled = hasDraftChanges && pendingAction == null,
+                onClick = {
+                    if (viewModel.requiresWaitToApply() || appBlockingViewModel.requiresWaitToApply()) {
+                        secondsRemaining = APPLY_WAIT_SECONDS
+                        pendingAction = BlockingPendingAction.Apply()
+                    } else {
+                        applyDrafts()
+                    }
+                },
+            )
+        }
+    }
+
+    val applyAction = pendingAction as? BlockingPendingAction.Apply
+    if (applyAction != null) {
+        BlockingApplyCountdownDialog(
+            secondsRemaining = secondsRemaining,
+            onClose = {
+                if (pendingAction === applyAction) {
+                    pendingAction = null
+                    secondsRemaining = 0
+                }
+            },
         )
     }
 
@@ -231,7 +250,7 @@ fun BlockingScreen(
             onDurationChange = { pauseDurationMinutes = it },
             onConfirm = {
                 showPauseDialog = false
-                secondsRemaining = ACTION_WAIT_SECONDS
+                secondsRemaining = PAUSE_WAIT_SECONDS
                 pendingAction = BlockingPendingAction.Pause(pauseDurationMinutes)
             },
             onDismiss = { showPauseDialog = false },
@@ -651,8 +670,6 @@ private val DAY_LABELS = listOf(
     6 to "S",
     7 to "D",
 )
-
-private const val ACTION_WAIT_SECONDS = 45
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this

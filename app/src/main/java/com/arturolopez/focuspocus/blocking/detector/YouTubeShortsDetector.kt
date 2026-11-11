@@ -1,42 +1,22 @@
 package com.arturolopez.focuspocus.blocking.detector
 
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 
 object YouTubeShortsDetector {
 
-    data class Detection(
-        val reason: String,
-    )
-
-    fun detect(root: AccessibilityNodeInfo?): Detection? {
-        if (root == null) return null
-
-        val signals = collectSignals(root)
-
-        val strongViewId = signals.viewIds.firstOrNull { viewId ->
-            STRONG_VIEW_ID_MARKERS.any(viewId::contains)
-        }
-        if (strongViewId != null) {
-            return Detection(reason = "viewId:$strongViewId")
-        }
-
-        val hasShortsMarker = signals.labels.any { label ->
-            SHORTS_LABEL_MARKERS.any(label::contains)
-        }
-        val actionScore = ACTION_MARKER_GROUPS.count { markerGroup ->
-            signals.labels.any { label -> markerGroup.any(label::contains) }
-        }
-
-        return if (hasShortsMarker && actionScore >= 3) {
-            Detection(reason = "shorts-label+actions:$actionScore")
-        } else {
-            null
-        }
+    data class Inspection(val visiblePlayerIds: Set<String>) {
+        val isPlayerOpen: Boolean
+            get() = visiblePlayerIds.size >= 2 && visiblePlayerIds.any(PLAYER_CONTAINER_IDS::contains)
     }
 
-    private fun collectSignals(root: AccessibilityNodeInfo): Signals {
-        val labels = mutableSetOf<String>()
-        val viewIds = mutableSetOf<String>()
+    fun inspect(root: AccessibilityNodeInfo): Inspection? {
+        val windowBounds = Rect().also(root::getBoundsInScreen)
+        if (windowBounds.isEmpty) return null
+
+        val minPlayerHeight = windowBounds.height() * MIN_PLAYER_HEIGHT_RATIO
+        val visiblePlayerIds = mutableSetOf<String>()
+        val nodeBounds = Rect()
         val pendingNodes = ArrayDeque<AccessibilityNodeInfo>()
         pendingNodes.add(root)
 
@@ -45,46 +25,38 @@ object YouTubeShortsDetector {
             val node = pendingNodes.removeFirst()
             visitedNodes++
 
-            node.text?.toString()?.normalize()?.takeIf(String::isNotBlank)?.let(labels::add)
-            node.contentDescription?.toString()?.normalize()?.takeIf(String::isNotBlank)?.let(labels::add)
-            node.viewIdResourceName?.normalize()?.takeIf(String::isNotBlank)?.let(viewIds::add)
+            val viewId = node.viewIdResourceName
+            if (viewId != null && viewId in PLAYER_VIEW_IDS && node.isVisibleToUser) {
+                node.getBoundsInScreen(nodeBounds)
+                if (nodeBounds.intersect(windowBounds) && nodeBounds.height() >= minPlayerHeight) {
+                    visiblePlayerIds.add(viewId)
+                }
+            }
 
             for (index in 0 until node.childCount) {
                 node.getChild(index)?.let(pendingNodes::add)
             }
         }
 
-        return Signals(labels = labels, viewIds = viewIds)
+        return Inspection(visiblePlayerIds)
     }
 
-    private fun String.normalize(): String = lowercase().trim()
-
-    private data class Signals(
-        val labels: Set<String>,
-        val viewIds: Set<String>,
-    )
-
     private const val MAX_NODES = 500
+    private const val MIN_PLAYER_HEIGHT_RATIO = 0.6
+    private const val VIEW_ID_PREFIX = "com.google.android.youtube:id/"
 
-    private val STRONG_VIEW_ID_MARKERS = listOf(
-        "reel_watch",
-        "reel_player",
-        "reel_recycler",
-        "shorts_player",
-        "shorts_video",
+    private val PLAYER_CONTAINER_IDS = setOf(
+        "${VIEW_ID_PREFIX}reel_recycler",
+        "${VIEW_ID_PREFIX}reel_recycler_view",
+        "${VIEW_ID_PREFIX}reel_watch_fragment_root",
+        "${VIEW_ID_PREFIX}reel_player_page",
+        "${VIEW_ID_PREFIX}reel_player_page_container",
     )
 
-    private val SHORTS_LABEL_MARKERS = listOf(
-        "shorts",
-        "vídeos cortos",
-    )
-
-    private val ACTION_MARKER_GROUPS = listOf(
-        listOf("like", "me gusta"),
-        listOf("dislike", "no me gusta"),
-        listOf("comment", "comentario"),
-        listOf("share", "compartir"),
-        listOf("remix", "remezclar"),
-        listOf("sound", "sonido"),
+    private val PLAYER_VIEW_IDS = PLAYER_CONTAINER_IDS + setOf(
+        "${VIEW_ID_PREFIX}reel_player_overlay",
+        "${VIEW_ID_PREFIX}reel_scrim_shorts",
+        "${VIEW_ID_PREFIX}shorts_player",
+        "${VIEW_ID_PREFIX}shorts_video_container",
     )
 }

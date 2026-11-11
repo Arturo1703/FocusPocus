@@ -70,7 +70,15 @@ class ShortVideoAppsViewModel(application: Application) : AndroidViewModel(appli
         updateHasChanges()
     }
 
+    internal fun requiresWaitToApply(): Boolean = _hasChanges.value && requiresBlockingWait(
+        appliedApps = appliedSelectedIds,
+        appliedSchedule = appliedSchedule,
+        draftApps = selectedDraftIds(),
+        draftSchedule = _schedule.value,
+    )
+
     fun applyDraft() {
+        if (!_hasChanges.value) return
         val selectedIds = selectedDraftIds()
         val currentSchedule = _schedule.value
         appliedSelectedIds = selectedIds
